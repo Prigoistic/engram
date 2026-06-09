@@ -1,0 +1,170 @@
+//! Command dispatch and the command table.
+//!
+//! Each command lives in its own submodule and exposes a [`Command`] descriptor.
+//! [`dispatch`] looks the incoming command up in [`COMMANDS`], checks its arity,
+//! and calls the handler.
+
+mod append;
+mod config;
+mod del;
+mod echo;
+mod exists;
+mod get;
+mod incr;
+mod ping;
+mod set;
+mod vadd;
+mod vdel;
+mod vinfo;
+mod vnew;
+mod vsave;
+mod vsearch;
+
+use std::collections::HashMap;
+use std::sync::LazyLock;
+
+use crate::resp::Value;
+use crate::state::State;
+
+/// Runs a `VSEARCH` against a read-locked registry, off the event-loop thread.
+/// `args` is the command's arguments after the name.
+pub(crate) use vsearch::run as run_search;
+
+/// How many elements a command expects, counting the command name itself.
+pub enum Arity {
+    /// Exactly this many elements, for example `GET key` is `Exact(2)`.
+    Exact(usize),
+
+    /// At least this many elements, for example `PING [message]` is `Min(1)`.
+    Min(usize),
+}
+
+/// A command's metadata together with the function that runs it.
+pub struct Command {
+    /// The command name, uppercase.
+    pub name: &'static str,
+
+    /// How many elements the command expects.
+    pub arity: Arity,
+
+    /// Runs the command, given the arguments after the name.
+    pub handler: fn(&[Vec<u8>], &mut State) -> Value,
+}
+
+/// Every command the server knows.
+const COMMANDS: &[Command] = &[
+    ping::COMMAND,
+    echo::COMMAND,
+    get::COMMAND,
+    set::COMMAND,
+    config::COMMAND,
+    del::COMMAND,
+    exists::COMMAND,
+    append::COMMAND,
+    incr::COMMAND,
+    vnew::COMMAND,
+    vadd::COMMAND,
+    vsearch::COMMAND,
+    vdel::COMMAND,
+    vinfo::COMMAND,
+    vsave::COMMAND,
+];
+
+/// Command name to command mapping.
+static COMMAND_TABLE: LazyLock<HashMap<&'static [u8], &'static Command>> =
+    LazyLock::new(|| COMMANDS.iter().map(|c| (c.name.as_bytes(), c)).collect());
+
+/// Routes a parsed request to its command and returns the reply.
+///
+/// `argv` is the command name followed by its arguments, and is never empty.
+pub fn dispatch(argv: &[Vec<u8>], state: &mut State) -> Value {
+    let name = &argv[0];
+
+    let upper = name.to_ascii_uppercase();
+    let command = match COMMAND_TABLE.get(upper.as_slice()).copied() {
+        Some(command) => command,
+        None => return unknown_command(name, &argv[1..]),
+    };
+
+    let arity_ok = match command.arity {
+        Arity::Exact(n) => argv.len() == n,
+        Arity::Min(n) => argv.len() >= n,
+    };
+    if !arity_ok {
+        return wrong_args(command.name);
+    }
+
+    (command.handler)(&argv[1..], state)
+}
+
+/// Builds the standard reply for a command called with the wrong argument count.
+fn wrong_args(command: &str) -> Value {
+    Value::Error(format!(
+        "ERR wrong number of arguments for '{}' command",
+        command.to_ascii_lowercase()
+    ))
+}
+
+/// Builds the standard reply for an unrecognized command.
+fn unknown_command(name: &[u8], args: &[Vec<u8>]) -> Value {
+    let name = String::from_utf8_lossy(name);
+
+    let mut list = String::new();
+    for arg in args {
+        list.push_str(&format!("'{}' ", String::from_utf8_lossy(arg)));
+    }
+
+    Value::Error(format!(
+        "ERR unknown command '{name}', with args beginning with: {list}"
+    ))
+}
+
+/// Builds the standard reply for a value that is not a valid integer.
+fn not_integer() -> Value {
+    Value::Error("ERR value is not an integer or out of range".to_string())
+}
+
+/// Builds the standard reply for an integer operation that would overflow.
+fn overflow() -> Value {
+    Value::Error("ERR increment or decrement would overflow".to_string())
+}
+
+#[cfg(test)]
+mod test_utils {
+    use super::*;
+    use crate::config::Config;
+
+    /// Builds a command's argument vector from its parts.
+    pub fn cmd(parts: &[&str]) -> Vec<Vec<u8>> {
+        parts.iter().map(|p| p.as_bytes().to_vec()).collect()
+    }
+
+    /// Creates empty state with the default configuration.
+    pub fn state() -> State {
+        State::new(Config::default())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_utils::{cmd, state};
+
+    #[test]
+    fn command_name_is_case_insensitive() {
+        assert_eq!(
+            dispatch(&cmd(&["ping"]), &mut state()),
+            Value::Simple("PONG".to_string())
+        );
+    }
+
+    #[test]
+    fn unknown_command_reports_args() {
+        assert_eq!(
+            dispatch(&cmd(&["FOOBAR", "x"]), &mut state()),
+            Value::Error(
+                "ERR unknown command 'FOOBAR', with args beginning with: 'x' ".to_string()
+            )
+        );
+    }
+}
