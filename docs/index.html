@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>engram — building a vector memory engine from scratch in Rust</title>
+<meta name="description" content="A Redis-wire-compatible associative vector memory engine in Rust: hand-rolled event loop, SIMD distance kernels, HNSW, crash-safe WAL, and a worker-pool reactor. Zero dependencies beyond libc." />
+<style>
+  :root {
+    --bg: #0a0c12;
+    --bg2: #11141d;
+    --card: #151926;
+    --line: #232838;
+    --ink: #d7dce6;
+    --mut: #8b94a7;
+    --accent: #7c9cff;
+    --accent2: #5eead4;
+    --warn: #ffb454;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: var(--sans); line-height: 1.65; font-size: 17px;
+    background-image: radial-gradient(60rem 40rem at 70% -10%, #1a2340 0%, transparent 60%),
+                      radial-gradient(50rem 30rem at -10% 10%, #14233022 0%, transparent 55%);
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 0 22px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code { font-family: var(--mono); font-size: 0.9em; background: #1c2233; padding: 2px 6px; border-radius: 5px; color: #cdd6f4; }
+  pre { background: #0e1119; border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; overflow-x: auto; font-family: var(--mono); font-size: 14px; line-height: 1.55; }
+  pre code { background: none; padding: 0; color: #c2cbe0; }
+  h1,h2,h3 { line-height: 1.25; }
+  h2 { font-size: 1.55rem; margin-top: 3.2rem; padding-top: 1rem; border-top: 1px solid var(--line); }
+  h2 .num { color: var(--accent); font-variant-numeric: tabular-nums; margin-right: .5rem; opacity: .7; font-size: 1rem; }
+  h3 { font-size: 1.1rem; color: var(--accent2); margin-top: 2rem; }
+  .mut { color: var(--mut); }
+
+  /* hero */
+  header { padding: 90px 0 40px; text-align: center; }
+  .logo { font-family: var(--mono); letter-spacing: .35em; color: var(--accent2); font-size: .8rem; text-transform: uppercase; }
+  h1 { font-size: clamp(2.1rem, 6vw, 3.4rem); margin: 14px 0 10px; font-weight: 800; letter-spacing: -.02em;
+       background: linear-gradient(100deg, #fff 10%, var(--accent) 55%, var(--accent2) 95%);
+       -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+  .tag { color: var(--mut); max-width: 640px; margin: 0 auto 26px; font-size: 1.1rem; }
+  .cta { display: inline-flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
+  .btn { border: 1px solid var(--line); background: var(--card); color: var(--ink); padding: 10px 18px; border-radius: 10px; font-weight: 600; font-size: .95rem; }
+  .btn.primary { background: linear-gradient(100deg, var(--accent), var(--accent2)); color: #0a0c12; border: none; }
+  .btn:hover { text-decoration: none; transform: translateY(-1px); }
+
+  /* stat chips */
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 40px 0 10px; }
+  .stat { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; text-align: center; }
+  .stat b { display: block; font-size: 1.5rem; font-family: var(--mono); color: #fff; }
+  .stat span { font-size: .8rem; color: var(--mut); }
+  @media (max-width: 620px){ .stats { grid-template-columns: repeat(2,1fr);} }
+
+  /* layered stack */
+  .stack { display: flex; flex-direction: column; gap: 8px; margin: 22px 0; }
+  .layer { border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px; background: var(--card); }
+  .layer .lname { font-weight: 700; }
+  .layer .ldesc { color: var(--mut); font-size: .9rem; }
+  .layer.l-loop { border-color: #3a4670; background: linear-gradient(90deg,#19203a,#151926); }
+  .layer.l-vec { border-color: #2f5a52; }
+  .layer.l-persist { border-color: #5a4a2f; }
+  .indent { margin-left: 26px; }
+
+  /* benchmark bars */
+  .bars { margin: 18px 0; }
+  .bar-row { display: grid; grid-template-columns: 120px 1fr; gap: 12px; align-items: center; margin: 9px 0; }
+  .bar-label { font-family: var(--mono); font-size: .82rem; color: var(--mut); text-align: right; }
+  .bar { background: #0e1119; border: 1px solid var(--line); border-radius: 7px; height: 30px; overflow: hidden; }
+  .bar-fill { height: 100%; display: flex; align-items: center; justify-content: flex-end; padding-right: 10px;
+              font-family: var(--mono); font-size: .8rem; color: #0a0c12; font-weight: 700; white-space: nowrap;
+              background: linear-gradient(90deg, var(--accent), var(--accent2)); }
+  .bar-fill.slow { background: linear-gradient(90deg,#39405a,#4a5375); color:#cdd6f4; }
+  .bar-fill.tiny { color: var(--accent2); background: none; justify-content:flex-start; padding-left:6px; }
+
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 6px 22px 14px; margin: 22px 0; }
+  pre.mermaid { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 18px; text-align:center; }
+  svg.fig { width: 100%; height: auto; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px; }
+  .callout { border-left: 3px solid var(--accent); background: #141a2b; padding: 12px 18px; border-radius: 0 10px 10px 0; margin: 18px 0; color: #c6cfe6; }
+  .warnote { border-left-color: var(--warn); background: #1f1a10; }
+  ul.tick { list-style: none; padding-left: 0; }
+  ul.tick li { padding-left: 26px; position: relative; margin: 8px 0; }
+  ul.tick li::before { content: "▸"; color: var(--accent2); position: absolute; left: 6px; }
+  ul.cross li::before { content: "✗"; color: var(--warn); }
+  table { width: 100%; border-collapse: collapse; margin: 18px 0; font-size: .92rem; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--accent); font-weight: 600; }
+  td.mono { font-family: var(--mono); }
+  footer { margin: 70px 0 50px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--mut); font-size: .9rem; text-align: center; }
+  .kbd { font-family: var(--mono); background:#1c2233; border:1px solid var(--line); border-bottom-width:2px; border-radius:6px; padding:1px 6px; font-size:.85em; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="logo">engram</div>
+  <h1>A vector memory engine, from scratch</h1>
+  <p class="tag">A Redis-wire-compatible associative memory engine in Rust — hand-rolled event loop, SIMD distance kernels, a from-scratch HNSW index, a crash-safe write-ahead log, and a worker-pool reactor. <strong>Zero dependencies beyond <code>libc</code>.</strong></p>
+  <div class="cta">
+    <a class="btn primary" href="https://github.com/Prigoistic/engram">View on GitHub →</a>
+    <a class="btn" href="#architecture">Read the design</a>
+  </div>
+</header>
+
+<div class="stats">
+  <div class="stat"><b>~5.3k</b><span>lines of Rust</span></div>
+  <div class="stat"><b>1</b><span>dependency (libc)</span></div>
+  <div class="stat"><b>123</b><span>tests passing</span></div>
+  <div class="stat"><b>8.8×</b><span>SIMD over scalar</span></div>
+  <div class="stat"><b>1.00</b><span>recall@10 vs brute force</span></div>
+  <div class="stat"><b>&lt;0.6ms</b><span>p99 ping under load</span></div>
+</div>
+
+<h2><span class="num">00</span>Why build this?</h2>
+<p>Every agent framework eventually bolts on a "memory" — a vector store you write embeddings to and query by similarity. In production you'd reach for <code>usearch</code>, <code>FAISS</code>, or <code>pgvector</code>, and you should. So why hand-roll one?</p>
+<p>Because the interesting research surface is the <em>retrieval primitive itself</em> — associative recall, energy-based memory, decay and consolidation — and off-the-shelf databases won't let you touch it. <strong>engram</strong> is a substrate I fully control: a real, wire-compatible memory engine where the similarity core is mine to replace. The byproduct is a tour through the systems stack — multiplexing, SIMD, graph indexes, durability, and concurrency — each built by hand and measured, not imported.</p>
+<div class="callout">It speaks <strong>RESP2</strong>, the Redis wire protocol, so <code>redis-cli</code>, <code>redis-benchmark</code>, and every Redis client library talk to it unchanged.</div>
+
+<h2 id="architecture"><span class="num">01</span>The architecture</h2>
+<p>The whole engine is driven by readiness on a handful of file descriptors through a single <code>poll()</code>. Here is the stack — and the one idea that holds it together is that <em>everything</em>, including cross-thread search completions, enters through that same loop.</p>
+
+<div class="stack">
+  <div class="layer l-loop"><span class="lname">Event loop · I/O multiplexer</span><div class="ldesc">one <code>poll()</code> over kqueue (macOS) / epoll (Linux) — watches the listener, every client socket, and a self-pipe</div></div>
+  <div class="layer"><span class="lname">Server (EventHandler)</span><div class="ldesc">accept · per-connection read buffers · in-order reply tracking</div></div>
+  <div class="layer indent"><span class="lname">RESP2 codec + command dispatch</span><div class="ldesc">parse <code>argv</code>, arity-check, route to a handler — KV commands run inline</div></div>
+  <div class="layer l-vec indent"><span class="lname">Vector engine</span><div class="ldesc">SIMD kernels (NEON/AVX2/scalar) · HNSW graph index · registry behind an <code>RwLock</code></div></div>
+  <div class="layer indent"><span class="lname">Search worker pool</span><div class="ldesc">VSEARCH runs off the loop; results return through the self-pipe</div></div>
+  <div class="layer l-persist indent"><span class="lname">Persistence</span><div class="ldesc">CRC-framed fsync'd WAL · compacting snapshot loaded via <code>mmap</code></div></div>
+</div>
+
+<h3>Everything is a file descriptor</h3>
+<p>The multiplexer exposes two operations — <code>subscribe(fd)</code> and <code>poll()</code> — and over the engine's lifetime exactly three kinds of fd are ever registered. That set <em>is</em> the architecture:</p>
+<table>
+  <tr><th>Subscribed fd</th><th>Readiness means</th></tr>
+  <tr><td class="mono">listener socket</td><td>a new client is waiting → <code>accept()</code></td></tr>
+  <tr><td class="mono">client socket</td><td>bytes arrived → parse &amp; dispatch commands</td></tr>
+  <tr><td class="mono">self-pipe (read end)</td><td>a worker finished a search → write its reply</td></tr>
+</table>
+
+<h2><span class="num">02</span>SIMD distance kernels</h2>
+<p>Similarity search spends nearly all its time in one inner loop: the dot product / squared-L2 between a query and stored vectors. So that loop is hand-written with SIMD intrinsics and chosen at runtime: <strong>NEON</strong> on Apple Silicon, <strong>AVX2 + FMA</strong> on x86-64, scalar everywhere else. The scalar version stays around as the oracle the SIMD paths are tested against.</p>
+<pre><code>#[cfg(target_arch = "aarch64")]
+pub fn dot(a: &amp;[f32], b: &amp;[f32]) -> f32 {
+    // SAFETY: NEON is baseline on AArch64, always available.
+    unsafe { dot_neon(a, b) }      // 4× 128-bit FMA accumulators / iter
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn dot(a: &amp;[f32], b: &amp;[f32]) -> f32 {
+    if std::is_x86_feature_detected!("avx2") &amp;&amp; std::is_x86_feature_detected!("fma") {
+        unsafe { dot_avx2(a, b) }  // guarded by runtime detection
+    } else { dot_scalar(a, b) }
+}</code></pre>
+<p class="mut">Throughput: 100,000 × 768-dim dot products.</p>
+<div class="bars">
+  <div class="bar-row"><span class="bar-label">scalar</span><div class="bar"><div class="bar-fill slow" style="width:100%">47.9 ms</div></div></div>
+  <div class="bar-row"><span class="bar-label">NEON SIMD</span><div class="bar"><div class="bar-fill" style="width:11.3%">5.4 ms</div></div></div>
+</div>
+<p><strong>8.85× faster</strong>, ~28 GFLOP/s — and bit-comparable to the scalar reference across every vector length (the remainder/tail paths are tested explicitly).</p>
+
+<h2><span class="num">03</span>HNSW, by hand</h2>
+<p>Exact nearest-neighbour search is a linear scan — fine as a correctness oracle, too slow at scale. The approximate index is a from-scratch <strong>Hierarchical Navigable Small World</strong> graph: a stack of layers where upper layers are sparse "express lanes" and the bottom layer holds everyone. A query greedily descends from the top entry point, then does a breadth-bounded search at the base.</p>
+
+<svg class="fig" viewBox="0 0 640 290" role="img" aria-label="HNSW layered graph">
+  <defs>
+    <marker id="ar" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#5eead4"/></marker>
+    <style>
+      .ly{fill:#8b94a7;font:12px ui-monospace,monospace}
+      .nd{fill:#1c2233;stroke:#3a4670;stroke-width:1.5}
+      .ed{stroke:#2a3350;stroke-width:1}
+      .path{stroke:#5eead4;stroke-width:2.2;marker-end:url(#ar)}
+      .hot{fill:#7c9cff;stroke:#fff}
+      .tgt{fill:#5eead4;stroke:#fff}
+      .lbl{fill:#d7dce6;font:11px ui-monospace,monospace}
+    </style>
+  </defs>
+  <!-- layer 2 -->
+  <text x="14" y="44" class="ly">L2</text>
+  <line x1="120" y1="40" x2="470" y2="40" class="ed"/>
+  <circle cx="120" cy="40" r="10" class="nd hot"/>
+  <circle cx="470" cy="40" r="10" class="nd"/>
+  <text x="92" y="26" class="lbl">entry</text>
+  <!-- layer 1 -->
+  <text x="14" y="134" class="ly">L1</text>
+  <line x1="120" y1="130" x2="260" y2="130" class="ed"/>
+  <line x1="260" y1="130" x2="400" y2="130" class="ed"/>
+  <line x1="400" y1="130" x2="540" y2="130" class="ed"/>
+  <circle cx="120" cy="130" r="10" class="nd"/>
+  <circle cx="260" cy="130" r="10" class="nd hot"/>
+  <circle cx="400" cy="130" r="10" class="nd"/>
+  <circle cx="540" cy="130" r="10" class="nd"/>
+  <!-- layer 0 -->
+  <text x="14" y="234" class="ly">L0</text>
+  <line x1="80" y1="230" x2="600" y2="230" class="ed"/>
+  <line x1="200" y1="230" x2="280" y2="205" class="ed"/>
+  <line x1="320" y1="205" x2="420" y2="230" class="ed"/>
+  <circle cx="80" cy="230" r="9" class="nd"/>
+  <circle cx="200" cy="230" r="9" class="nd"/>
+  <circle cx="300" cy="205" r="9" class="nd tgt"/>
+  <circle cx="420" cy="230" r="9" class="nd"/>
+  <circle cx="520" cy="230" r="9" class="nd"/>
+  <circle cx="600" cy="230" r="9" class="nd"/>
+  <text x="270" y="262" class="lbl">k-NN result</text>
+  <!-- descent path -->
+  <path class="path" d="M120,52 L255,120"/>
+  <path class="path" d="M260,142 L298,193"/>
+  <text x="360" y="284" class="ly">greedy descent ↓ then breadth-bounded search at L0</text>
+</svg>
+
+<p>The implementation follows Malkov &amp; Yashunin (2018): the <code>search_layer</code> routine, the neighbour-selection heuristic (keep a candidate only if it's closer to the base than to any already-chosen neighbour, with kept-pruned backfill), and bidirectional linking with degree pruning. Deletes are tombstones; <code>VSAVE</code> compacts them away.</p>
+<div class="callout">Measured <strong>recall@10 = 1.00</strong> against the exhaustive scan on a held-out query set — the graph returns exactly what brute force would, far faster.</div>
+
+<h2><span class="num">04</span>Durability: WAL + snapshot</h2>
+<p>Persistence follows the same shape as Redis' AOF + RDB. Every mutation is appended to a <strong>write-ahead log</strong> and flushed; a periodic <strong>snapshot</strong> captures live state so the log can be truncated. The log is the source of truth — a crash loses nothing committed.</p>
+
+<h3>Each WAL record is self-describing</h3>
+<div style="display:flex;gap:6px;font-family:var(--mono);font-size:.82rem;margin:14px 0;flex-wrap:wrap">
+  <div style="flex:1;min-width:90px;background:#1a2740;border:1px solid #3a4670;border-radius:8px 0 0 8px;padding:12px;text-align:center">CRC-32<br><span class="mut">u32</span></div>
+  <div style="flex:1;min-width:90px;background:#16203a;border:1px solid #2a3350;padding:12px;text-align:center">length<br><span class="mut">u32</span></div>
+  <div style="flex:3;min-width:160px;background:#11141d;border:1px solid #2a3350;border-radius:0 8px 8px 0;padding:12px;text-align:center">payload — op + length-prefixed fields</div>
+</div>
+<p>On replay, records are read until one is short or fails its checksum — the exact signature of a write torn by a crash. Everything up to that point is durable and is replayed; the torn tail is discarded. The snapshot is written to a temp file and <code>rename</code>d into place (atomic), then loaded back through a read-only <code>mmap</code>.</p>
+
+<pre class="mermaid">
+flowchart LR
+  A([boot]) --> B{snapshot exists?}
+  B -- yes --> C[mmap-load snapshot<br/>rebuild graph]
+  B -- no --> D[empty registry]
+  C --> E[replay WAL on top]
+  D --> E
+  E --> F([ready])
+  style F fill:#1c3a33,stroke:#5eead4,color:#fff
+  style A fill:#1a2740,stroke:#7c9cff,color:#fff
+</pre>
+<div class="callout">Validated the brutal way: write data, <code>kill -9</code> the process mid-flight (no clean shutdown), restart — WAL replay reconstructs the full index, dead keys stay dead, and a post-snapshot crash recovers from snapshot + tail.</div>
+
+<h2><span class="num">05</span>Non-blocking search</h2>
+<p>The loop is single-threaded, which is perfect for key-value ops that finish in nanoseconds. But an HNSW walk over millions of vectors takes milliseconds — long enough to stall every other client. So <code>VSEARCH</code> is the one command pushed off the loop, onto a pool of worker threads that read the registry under a shared lock.</p>
+<p>The elegant part: I didn't add a second event system. A worker writes one byte to a <strong>self-pipe</strong>, whose read end is subscribed to the <em>same</em> multiplexer. The loop wakes for "search done" exactly the way it wakes for "socket readable."</p>
+
+<pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant C as Client A
+  participant L as Event loop (1 thread)
+  participant W as Worker pool
+  participant P as Self-pipe
+  C->>L: VSEARCH index q k
+  L->>W: enqueue job, mark conn "busy"
+  Note over L: loop keeps serving<br/>other clients (PING, SET…)
+  W->>W: read-lock registry, walk HNSW
+  W->>P: write 1 byte (wake)
+  P-->>L: pipe readable → poll() returns
+  L->>C: write reply, clear "busy"
+</pre>
+<p>A connection with a search in flight is marked <em>busy</em> so its later commands don't overtake the pending reply — per-connection ordering is preserved while every other connection runs free. A monotonic connection id guards against a worker's result landing on a different client that reused the same fd.</p>
+
+<p class="mut">8 clients hammering search, while a 9th probes <code>PING</code> latency throughout:</p>
+<div class="bars">
+  <div class="bar-row"><span class="bar-label">1 client</span><div class="bar"><div class="bar-fill" style="width:17.6%">681 q/s</div></div></div>
+  <div class="bar-row"><span class="bar-label">8 clients</span><div class="bar"><div class="bar-fill" style="width:100%">3,859 q/s</div></div></div>
+</div>
+<p><strong>5.7× parallel speedup</strong>, and during the storm <code>PING</code> stayed at <strong>0.06 ms median / 0.57 ms max</strong> — the event loop never head-of-line-blocks behind a search.</p>
+
+<h2><span class="num">06</span>What I'd do differently</h2>
+<p>Being honest about the gaps is the point — these are the difference between "correct and fast enough to demo" and "saturates a NIC at p99":</p>
+<ul class="tick cross">
+  <li>One global <code>RwLock</code> over the registry — a single insert stalls all readers. Per-index locks or an epoch/arc-swap read path would fix it.</li>
+  <li>The WAL <code>fsync</code>s on every write. Real systems group-commit, or offer an <code>everysec</code> durability tier.</li>
+  <li><code>search_layer</code> clones the neighbour list each hop and allocates a fresh visited-set per query — a reused, versioned visited array removes both.</li>
+  <li>Vectors are raw <code>f32</code> with no quantization (PQ/SQ would cut memory 4–32×), and the live store is heap-resident — serving reads directly from a persistent <code>mmap</code> is the natural next step.</li>
+  <li>Single-node, single-reactor: no sharding, no write-backpressure handling.</li>
+</ul>
+<div class="callout warnote">None are conceptually hard — they're the next tier. Knowing where your own system breaks is the actual engineering.</div>
+
+<h2><span class="num">07</span>Try it</h2>
+<pre><code>cargo run -- --dir ./data        # start with persistence on :6380
+
+redis-cli -p 6380 VNEW mem 4 METRIC l2     # create a 4-dim index
+# (vectors are packed little-endian f32 bulk strings on the wire)
+redis-cli -p 6380 VSEARCH mem &lt;query&gt; 10   # 10 nearest keys + distances
+redis-cli -p 6380 VSAVE                    # snapshot + truncate the WAL</code></pre>
+<p>Commands: <code>VNEW · VADD · VSEARCH · VDEL · VINFO · VSAVE</code>, alongside the classic <code>GET/SET/DEL/INCR/…</code> key-value set.</p>
+
+<footer>
+  Built in Rust · <a href="https://github.com/Prigoistic/engram">github.com/Prigoistic/engram</a> · Apache-2.0
+</footer>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>
+  if (window.mermaid) {
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: "base",
+      themeVariables: {
+        background: "#151926", primaryColor: "#1c2233", primaryBorderColor: "#3a4670",
+        primaryTextColor: "#d7dce6", lineColor: "#5eead4", secondaryColor: "#16203a",
+        tertiaryColor: "#11141d", fontFamily: "ui-monospace, monospace", fontSize: "14px",
+        actorBkg: "#1c2233", actorBorder: "#3a4670", actorTextColor: "#d7dce6",
+        signalColor: "#8b94a7", signalTextColor: "#d7dce6", noteBkgColor: "#1a2740", noteTextColor: "#c6cfe6", noteBorderColor: "#3a4670"
+      }
+    });
+  }
+</script>
+</body>
+</html>

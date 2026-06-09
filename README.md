@@ -9,6 +9,8 @@ It is built from the ground up with no external crates beyond `libc`: the
 distance kernels, the [HNSW](https://arxiv.org/abs/1603.09320) graph index, the
 persistence layer, and the concurrency are all hand-rolled.
 
+📖 **[Read the project write-up →](https://prigoistic.github.io/engram/)** — architecture, diagrams, and benchmarks.
+
 ## What's inside
 
 - **Single-threaded, event-driven core** over raw `kqueue` (macOS) / `epoll` (Linux).
