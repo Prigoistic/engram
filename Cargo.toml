@@ -1,0 +1,8 @@
+[package]
+name = "engram"
+version = "0.1.0"
+edition = "2024"
+description = "A low-level, Redis-wire-compatible associative vector memory engine."
+
+[dependencies]
+libc = "0.2.186"
